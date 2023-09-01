@@ -10,7 +10,7 @@ from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 import types
 import math
 
-from models.encoder import EncoderBlock, CEFF, LayerNorm
+from models.encoder import EncoderBlock, CEFF, CEFF2, LayerNorm
 
 
 class ConvLayer(nn.Module):
@@ -81,11 +81,11 @@ class OverlapPatchEmbed(nn.Module):
                 m.bias.data.zero_()
 
     def forward(self, x):
-        x = self.proj(x)
-
+        # input x (8,3,256,256)
+        x = self.proj(x) # (8,64,64,64)
         _, _, H, W = x.shape
         #x = x.flatten(2).transpose(1, 2)
-        x = self.norm(x)
+        x = self.norm(x)  # stage1 (8,64,64,64)
 
         return x, H, W
 
@@ -137,7 +137,7 @@ def conv_diff(in_channels, out_channels):
 #Intermediate prediction module
 def make_prediction(in_channels, out_channels):
     return nn.Sequential(
-        nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+        nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1), # in 256, out 256
         nn.ReLU(),
         nn.BatchNorm2d(out_channels),
         nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
@@ -151,7 +151,7 @@ class EncoderTransformer(nn.Module):
         super().__init__()
         self.num_classes    = num_classes
         self.depths         = depths
-        self.embed_dims     = embed_dims
+        self.embed_dims     = embed_dims   # (64,128,320,512)
 
         # patch embedding definitions
         self.patch_embed1 = OverlapPatchEmbed(patch_size=7, stride=4, in_chans=in_chans, embed_dim=embed_dims[0])
@@ -211,17 +211,18 @@ class EncoderTransformer(nn.Module):
                 m.bias.data.zero_()
     
     def forward_features(self, feats):
-        B = feats.shape[0]
+        B = feats.shape[0]  # batchsize
         outs = []
     
         # stage 1
         feats, H1, W1 = self.patch_embed1(feats)
         for i, blk in enumerate(self.block1):
-            feats = blk(feats, H1, W1)
+            feats = blk(feats, H1, W1) # (8,64,64,64)
         feats = self.norm1(feats)
         #feats = feats.reshape(B, H1, W1, -1).permute(0, 3, 1, 2).contiguous()
         outs.append(feats)
 
+        #stage 2
         feats, H1, W1 = self.patch_embed2(feats)
         for i, blk in enumerate(self.block2):
             feats = blk(feats, H1, W1)
@@ -261,7 +262,7 @@ class DecoderTransformer(nn.Module):
         #settings
         self.align_corners   = align_corners
         self.in_channels     = in_channels
-        self.embedding_dim   = embedding_dim
+        self.embedding_dim   = embedding_dim  # output.dim = input.dim
         self.output_nc       = output_nc
         c1_in_channels, c2_in_channels, c3_in_channels, c4_in_channels = self.in_channels
 
@@ -276,17 +277,20 @@ class DecoderTransformer(nn.Module):
         self.make_pred_c3 = make_prediction(in_channels=self.embedding_dim, out_channels=self.output_nc)
         self.make_pred_c2 = make_prediction(in_channels=self.embedding_dim, out_channels=self.output_nc)
         self.make_pred_c1 = make_prediction(in_channels=self.embedding_dim, out_channels=self.output_nc)
-
+        
         #Final linear fusion layer
+
+        desired_in_channels = int(embedding_dim*len(in_channels)/2)
+        #desired_in_channels = int(embedding_dim*len(in_channels))
         self.linear_fuse = nn.Sequential(
-           nn.Conv2d(in_channels=self.embedding_dim*len(in_channels), out_channels=self.embedding_dim, kernel_size=1),
+           nn.Conv2d(in_channels=desired_in_channels, out_channels=self.embedding_dim, kernel_size=1),
             nn.BatchNorm2d(self.embedding_dim)
         )
       
         self.ceff1 = CEFF(in_channels=self.embedding_dim, height=2)
         self.ceff2 = CEFF(in_channels=self.embedding_dim, height=2)
-        self.ceff3 = CEFF(in_channels=self.embedding_dim, height=2)
-        self.ceff4 = CEFF(in_channels=self.embedding_dim, height=2)
+        self.ceff3 = CEFF2(in_channels=self.embedding_dim, height=2)
+        self.ceff4 = CEFF2(in_channels=self.embedding_dim, height=2)
 
         #Final predction head
         self.convd2x    = UpsampleConvLayer(self.embedding_dim, self.embedding_dim, kernel_size=4, stride=2)
@@ -302,8 +306,9 @@ class DecoderTransformer(nn.Module):
     def forward(self, x_1, x_2):
 
         #img1 and img2 features
-        c1_1, c2_1, c3_1, c4_1 = x_1
-        c1_2, c2_2, c3_2, c4_2 = x_2
+        c1_1, c2_1, c3_1, c4_1 = x_1  # C1 (8,64,64,64), C2 (8,128,32,32)
+        c1_2, c2_2, c3_2, c4_2 = x_2  # C3 (8,320,16,16), C4 (8,512,8,8)
+
 
         ############## MLP decoder on C1-C4 ###########
         n, _, h, w = c4_1.shape
@@ -311,37 +316,39 @@ class DecoderTransformer(nn.Module):
         outputs = []
         # Stage 4: x1/32 scale
         _c4_1 = self.linear_c4(c4_1).permute(0,2,1).reshape(n, -1, c4_1.shape[2], c4_1.shape[3])
-        _c4_2 = self.linear_c4(c4_2).permute(0,2,1).reshape(n, -1, c4_2.shape[2], c4_2.shape[3])
-        _c4   = self.ceff1([_c4_1, _c4_2])
-        p_c4  = self.make_pred_c4(_c4)
+        _c4_2 = self.linear_c4(c4_2).permute(0,2,1).reshape(n, -1, c4_2.shape[2], c4_2.shape[3]) #(8,256,8,8)
+        _c4   = self.ceff1([_c4_1, _c4_2])  # (8,256,8,8)
+        p_c4  = self.make_pred_c4(_c4) # (8,2,8,8)
         outputs.append(p_c4)
-        _c4_up= resize(_c4, size=c1_2.size()[2:], mode='bilinear', align_corners=False)
+        _c4_up= resize(_c4, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
 
         # Stage 3: x1/16 scale
         _c3_1 = self.linear_c3(c3_1).permute(0,2,1).reshape(n, -1, c3_1.shape[2], c3_1.shape[3])
-        _c3_2 = self.linear_c3(c3_2).permute(0,2,1).reshape(n, -1, c3_2.shape[2], c3_2.shape[3])
-        _c3   = self.ceff2([_c3_1, _c3_2])
-        p_c3  = self.make_pred_c3(_c3)
+        _c3_2 = self.linear_c3(c3_2).permute(0,2,1).reshape(n, -1, c3_2.shape[2], c3_2.shape[3]) #(8,256,16,16)
+        _c3   = self.ceff2([_c3_1, _c3_2]) # (8,256,16,16)
+        p_c3  = self.make_pred_c3(_c3) # (8,2,16,16)
         outputs.append(p_c3)
-        _c3_up= resize(_c3, size=c1_2.size()[2:], mode='bilinear', align_corners=False)
+        _c3_up= resize(_c3, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
+        
+        # # Stage 2: x1/8 scale
+        # _c2_1 = self.linear_c2(c2_1).permute(0,2,1).reshape(n, -1, c2_1.shape[2], c2_1.shape[3])
+        # _c2_2 = self.linear_c2(c2_2).permute(0,2,1).reshape(n, -1, c2_2.shape[2], c2_2.shape[3])
+        # _c2   = self.ceff3([_c2_1, _c2_2]) # (8,256,32,32)
+        # p_c2  = self.make_pred_c2(_c2) # (8,2,32,32)
+        # outputs.append(p_c2)
+        # _c2_up= resize(_c2, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
 
-        # Stage 2: x1/8 scale
-        _c2_1 = self.linear_c2(c2_1).permute(0,2,1).reshape(n, -1, c2_1.shape[2], c2_1.shape[3])
-        _c2_2 = self.linear_c2(c2_2).permute(0,2,1).reshape(n, -1, c2_2.shape[2], c2_2.shape[3])
-        _c2   = self.ceff3([_c2_1, _c2_2])
-        p_c2  = self.make_pred_c2(_c2)
-        outputs.append(p_c2)
-        _c2_up= resize(_c2, size=c1_2.size()[2:], mode='bilinear', align_corners=False)
+        # # Stage 1: x1/4 scale
+        # _c1_1 = self.linear_c1(c1_1).permute(0,2,1).reshape(n, -1, c1_1.shape[2], c1_1.shape[3])
+        # _c1_2 = self.linear_c1(c1_2).permute(0,2,1).reshape(n, -1, c1_2.shape[2], c1_2.shape[3])
+        # _c1   = self.ceff4([_c1_1, _c1_2])
+        # p_c1  = self.make_pred_c1(_c1)
+        # outputs.append(p_c1)
+        
 
-        # Stage 1: x1/4 scale
-        _c1_1 = self.linear_c1(c1_1).permute(0,2,1).reshape(n, -1, c1_1.shape[2], c1_1.shape[3])
-        _c1_2 = self.linear_c1(c1_2).permute(0,2,1).reshape(n, -1, c1_2.shape[2], c1_2.shape[3])
-        _c1   = self.ceff4([_c1_1, _c1_2])
-        p_c1  = self.make_pred_c1(_c1)
-        outputs.append(p_c1)
-
-        #Linear Fusion of difference image from all scales
-        _c = self.linear_fuse(torch.cat([_c4_up, _c3_up, _c2_up, _c1],dim=1))
+        # Linear Fusion of difference image from all scales
+        #_c = self.linear_fuse(torch.cat([_c4_up, _c3_up, _c2_up, _c1],dim=1))
+        _c = self.linear_fuse(torch.cat([_c4_up, _c3_up],dim=1)) #(8,256,64,64)
 
         #Upsampling x2 (x1/2 scale)
         x = self.convd2x(_c)
@@ -350,10 +357,9 @@ class DecoderTransformer(nn.Module):
         #Upsampling x2 (x1 scale)
         x = self.convd1x(x)
         #Residual block
-        x = self.dense_1x(x)
-
+        x = self.dense_1x(x) #(8,256,256,256)
         #Final prediction
-        cp = self.change_probability(x)
+        cp = self.change_probability(x) #(8,2,256,256)
         
         outputs.append(cp)
 
@@ -363,7 +369,7 @@ class DecoderTransformer(nn.Module):
             for pred in temp:
                 outputs.append(self.active(pred))
 
-        return outputs
+        return outputs   # output not compared with gt_labels yet!
 
 
 # ScratchFormer:
@@ -388,7 +394,9 @@ class ScratchFormer(nn.Module):
 
     def forward(self, x1, x2):
 
+        # x1 (8,3,256,256)
         [fx1, fx2] = [self.Tenc_x2(x1), self.Tenc_x2(x2)]
+
         cp = self.TDec_x2(fx1, fx2)
 
         return cp

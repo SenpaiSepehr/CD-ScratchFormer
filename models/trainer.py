@@ -20,6 +20,7 @@ import cv2
 from utils import de_norm
 
 from tqdm import tqdm
+from torchinfo import summary
 
 class CDTrainer():
 
@@ -296,7 +297,7 @@ class CDTrainer():
         self.batch = batch
         img_in1 = batch['A'].to(self.device)
         img_in2 = batch['B'].to(self.device)
-        self.G_pred = self.net_G(img_in1, img_in2)
+        self.G_pred = self.net_G(img_in1, img_in2) # (8,2,256,256)
 
         if self.multi_scale_infer == True:
             self.G_final_pred = torch.zeros(self.G_pred[-1].size()).to(self.device)
@@ -375,4 +376,9 @@ class CDTrainer():
             ##########################################
             self._update_val_acc_curve()
             self._update_checkpoints()
+
+    def summarize_network(self, args):
+        model = define_G(args=args, gpu_ids=args.gpu_ids).to(self.device)
+        summary(model, input_size = [(args.batchsize,3,256,256),(args.batchsize,3,256,256)],
+                         device = 'cuda')
 

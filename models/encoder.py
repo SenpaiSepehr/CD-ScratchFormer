@@ -113,7 +113,7 @@ class EncoderBlock(nn.Module):
                     Rearrange('b d (w1 x) (w2 y) -> b x y w1 w2 d', w1 = self.window_size, w2 = self.window_size),
                     Attention(dim = dim, dim_head = dim_head, dropout = grid_dropout, window_size = self.window_size),
                     Rearrange('b x y w1 w2 d -> b d (w1 x) (w2 y)'),
-                )
+                ) # b (batch), d(channel), x y(cord)
         self.act = nn.GELU()
 
         self.layer_scale_1 = nn.Parameter(layer_scale_init_value * torch.ones((dim)), requires_grad=True)
@@ -127,14 +127,15 @@ class EncoderBlock(nn.Module):
 
         skip = x
         x = self.layer_norm0(skip)
-        x = skip + self.act(self.pos(x))
+        x = skip + self.act(self.pos(x)) #(8,64,64,64)
         
         skip = x       
         x = self.layer_norm1(skip)
-        x = self.deform_grid(x)
-        x = self.attn(x)
+        x = self.deform_grid(x) #(8,64,64,64)
+        print("x deform shape", x.shape)
+        x = self.attn(x)        #(8,64,64,64)
         x = self.drop_path_1(self.layer_scale_1.unsqueeze(-1).unsqueeze(-1) * x)
-        out = x  + skip
+        out = x  + skip #(8,64,64,64)
 
         x = self.layer_norm2(out)
         x = self.mlp(x)
@@ -145,6 +146,7 @@ class EncoderBlock(nn.Module):
 
 
 class CEFF(nn.Module):
+    "Channel Attention"
     def __init__(self, in_channels, height=2, reduction=8, bias=False):
         super(CEFF, self).__init__()
         
@@ -161,25 +163,80 @@ class CEFF(nn.Module):
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, inp_feats):
-        batch_size = inp_feats[0].shape[0]
-        n_feats =  inp_feats[0].shape[1]
+        batch_size = inp_feats[0].shape[0] # 16
+        n_feats =  inp_feats[0].shape[1]   # 256 channels
 
-        inp_feats = torch.cat(inp_feats, dim=1)
+        inp_feats = torch.cat(inp_feats, dim=1) 
+        # (8,512,z4,64),(8,512,32,32),(8,512,16,16),(8,512,8,8)
         inp_feats = inp_feats.view(batch_size, self.height, n_feats, inp_feats.shape[2], inp_feats.shape[3])
-        
-        feats_U = torch.sum(inp_feats, dim=1)
-        feats_S = self.avg_pool(feats_U)
-        feats_Z = self.conv_du(feats_S)
+        # (8,2,256,8,8)
+        feats_U = torch.sum(inp_feats, dim=1) # (8,256,8,8) The difference map!
+        feats_S = self.avg_pool(feats_U) # reduce resolution (8,256,1,1)
+        feats_Z = self.conv_du(feats_S)  # reduce channels   (8,32,1,1)
 
         attention_vectors = [fc(feats_Z) for fc in self.fcs]
+        # List[(8,2,256,1,1)
         attention_vectors = torch.cat(attention_vectors, dim=1)
-        attention_vectors = attention_vectors.view(batch_size, self.height, n_feats, 1, 1)
-        
+        # (8,512,1,1)
+        attention_vectors = attention_vectors.view(batch_size, self.height, n_feats, 1, 1) 
+        # (8,2,256,1,1)
         attention_vectors = self.softmax(attention_vectors)
-        
-        feats_V = torch.sum(inp_feats*attention_vectors, dim=1)
+        # (8,2,256,1,1)
+        feats_V = torch.sum(inp_feats*attention_vectors, dim=1) #(8,256,8,8)
         
         return feats_V        
+    
+
+class CEFF2(nn.Module):
+    """Spatial Attention"""
+    def __init__(self, in_channels, height = 2, reduction = 8, bias = False):
+        super(CEFF2, self).__init__()
+
+        self.height = height
+
+        output_embed = in_channels//8
+        self.query = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1))
+        self.key = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1))
+        self.value = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1))
+
+        self.softmax = nn.Softmax(dim = 1)
+
+        # Scaling factor
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, inp_feats):
+        batch_size = inp_feats[0].shape[0]
+        n_feats = inp_feats[0].shape[1]
+        dim_width = inp_feats[0].shape[2]
+        dim_height = inp_feats[0].shape[3]
+
+        # Reshaping pre-post image features
+        inp_feats = torch.cat(inp_feats, dim=1)
+        inp_feats = inp_feats.view(batch_size, self.height, n_feats,dim_width, dim_height) 
+        # (8,2,256,32,32)
+        sum_feats = torch.sum(inp_feats, dim=1) # (8,256,32,32)
+
+        shape_query = self.query(sum_feats).view(batch_size, -1, dim_width*dim_height).permute(0,2,1)
+        # (8,1024,32) -> (8,1024,256)
+        shape_key = self.key(sum_feats).view(batch_size, -1, dim_width*dim_height)
+        # (8,32,1024) -> (8,1024,256)
+        shape_val = self.value(sum_feats).view(batch_size, -1, dim_width*dim_height)
+        # (8,32,1024) -> (8,256,1024)
+
+        # Matrix Multiplication of Query & Key
+        mm_qk = torch.bmm(shape_query,shape_key) # (8,1024,1024)
+
+        # Find similarities
+        spatial_attn = self.softmax(mm_qk) #(8,1024,1024)
+
+        # Project the spatial attention on Value
+        new_feat = torch.bmm(shape_val, spatial_attn.permute(0,2,1)) # (8,32,1024) -> (8,256,1024)
+        new_feat = new_feat.view(batch_size, n_feats, dim_width, dim_height) # (8,256,32,32)
+
+        # Scaling param + summation
+        new_feat = self.gamma*new_feat + sum_feats
+
+        return new_feat
 
 
 class LayerNorm(nn.Module):

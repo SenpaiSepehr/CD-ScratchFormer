@@ -1,3 +1,10 @@
+# import sys
+# sys.path.append('/home/nouri-sepehr-ad/.local/lib/python3.8/site-packages')
+
+# import ptvsd
+# ptvsd.enable_attach(address=('172.16.10.44', 5678))
+# ptvsd.wait_for_attach()
+
 from argparse import ArgumentParser
 import torch
 from models.trainer import *
@@ -12,6 +19,7 @@ the main function for training the CD networks
 def train(args):
     dataloaders = utils.get_loaders(args)
     model = CDTrainer(args=args, dataloaders=dataloaders)
+    model.summarize_network(args=args)
     model.train_models()
 
 
@@ -30,19 +38,19 @@ if __name__ == '__main__':
     # args
     # ------------
     parser = ArgumentParser()
-    parser.add_argument('--gpu_ids', type=str, default='0,1,2,3', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
-    parser.add_argument('--project_name', default='./scratchformer', type=str)
+    parser.add_argument('--gpu_ids', type=str, default='0,1', help='gpu ids: 0,1, 6,7. use -1 for CPU')
+    parser.add_argument('--project_name', default='./train1.sep.01', type=str)
     parser.add_argument('--checkpoint_root', default='./checkpoints', type=str)
-    parser.add_argument('--vis_root', default='./vis', type=str)
+    parser.add_argument('--vis_root', default='./output_visuals', type=str)
 
     # data
-    parser.add_argument('--num_workers', default=8, type=int)
+    parser.add_argument('--num_workers', default=32, type=int)       # origianl: 8
     parser.add_argument('--dataset', default='CDDataset', type=str)
-    parser.add_argument('--data_name', default='CDD', type=str)
-    parser.add_argument('--batch_size', default=16, type=int)
+    parser.add_argument('--data_name', default='SYSU', type=str)
+    parser.add_argument('--batch_size', default=16, type=int)        # original: 16
     parser.add_argument('--split', default="train", type=str)
     parser.add_argument('--split_val', default="val", type=str)
-    parser.add_argument('--img_size', default=512, type=int)
+    parser.add_argument('--img_size', default=256, type=int)        # original: 512
     parser.add_argument('--shuffle_AB', default=False, type=str)
 
     # model
@@ -58,7 +66,7 @@ if __name__ == '__main__':
     # optimizer
     parser.add_argument('--optimizer', default='adamw', type=str)
     parser.add_argument('--lr', default=0.00041, type=float)
-    parser.add_argument('--max_epochs', default=300, type=int)
+    parser.add_argument('--max_epochs', default=10, type=int)
     parser.add_argument('--lr_policy', default='linear', type=str, help='linear | step')
     parser.add_argument('--lr_decay_iters', default=[100], type=int)
     
@@ -76,4 +84,4 @@ if __name__ == '__main__':
 
     train(args)
 
-    test(args)
+    #test(args)
