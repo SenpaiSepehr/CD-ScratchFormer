@@ -379,6 +379,6 @@ class CDTrainer():
 
     def summarize_network(self, args):
         model = define_G(args=args, gpu_ids=args.gpu_ids).to(self.device)
-        summary(model, input_size = [(args.batchsize,3,256,256),(args.batchsize,3,256,256)],
+        summary(model, input_size = [(args.batch_size,3,256,256),(args.batch_size,3,256,256)],
                          device = 'cuda')
 

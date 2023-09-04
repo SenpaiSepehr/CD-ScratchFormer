@@ -5,13 +5,11 @@ import torch.nn.functional as F
 from functools import partial
 import torch.nn.functional as F
 
-import timm
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
-import types
 import math
 
 from models.encoder import EncoderBlock, CEFF, CEFF2, LayerNorm
-
+from mixer import MLPMixer
 
 class ConvLayer(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding):
@@ -289,8 +287,8 @@ class DecoderTransformer(nn.Module):
       
         self.ceff1 = CEFF(in_channels=self.embedding_dim, height=2)
         self.ceff2 = CEFF(in_channels=self.embedding_dim, height=2)
-        self.ceff3 = CEFF2(in_channels=self.embedding_dim, height=2)
-        self.ceff4 = CEFF2(in_channels=self.embedding_dim, height=2)
+        self.ceff3 = CEFF(in_channels=self.embedding_dim, height=2)
+        self.ceff4 = CEFF(in_channels=self.embedding_dim, height=2)
 
         #Final predction head
         self.convd2x    = UpsampleConvLayer(self.embedding_dim, self.embedding_dim, kernel_size=4, stride=2)
@@ -371,6 +369,108 @@ class DecoderTransformer(nn.Module):
 
         return outputs   # output not compared with gt_labels yet!
 
+class DecoderTransformer2(nn.Module):
+    """
+    Transformer Decoder
+    """
+    def __init__(self, align_corners=True, in_channels=[64, 128, 320, 512], embedding_dim=256, output_nc=2, decoder_softmax=False):
+        super(DecoderTransformer, self).__init__()
+        
+        #settings
+        self.align_corners   = align_corners
+        self.in_channels     = in_channels
+        self.embedding_dim   = embedding_dim  # output.dim = input.dim
+        self.output_nc       = output_nc
+        c1_in_channels, c2_in_channels, c3_in_channels, c4_in_channels = self.in_channels
+
+        # MLP Mixer
+        featureDifference_size = [8,16]
+
+        self.mlp_mix4 = MLPMixer(image_size=featureDifference_size[0], channels=c4_in_channels,
+                                 patch_size=8, dim=512, depth=4)
+        self.mlp_mix3 = MLPMixer(image_size=featureDifference_size[1], channels=c3_in_channels,
+                                 patch_size=8, dim=512, depth=4)
+
+       
+        #Final activation
+        self.output_softmax     = decoder_softmax
+        self.active             = nn.Sigmoid()
+
+    def forward(self, x_1, x_2):
+
+        #img1 and img2 features
+        c1_1, c2_1, c3_1, c4_1 = x_1  # C1 (8,64,64,64), C2 (8,128,32,32)
+        c1_2, c2_2, c3_2, c4_2 = x_2  # C3 (8,320,16,16), C4 (8,512,8,8)
+
+
+        ############## MLP decoder on C3-C4 ###########
+        n, c, h, w = c4_1.shape
+        sets = 2
+        outputs = []
+        # Stage 4: x1/32 scale
+
+        # #### The Summation of Pre Post Features ####
+        # fmaps_4 = torch.cat([c4_1, c4_2], dim = 1) # (8,1024,8,8)
+        # fmaps_4 = fmaps_4.view(n,sets,c,fmaps_4.shape[2], fmaps_4.shape[3]) #(8,2,512,8,8)
+        # fmaps_4 = torch.sum(fmaps_4, dim=1) #(8,512,8,8)
+
+        # fmaps_3 = torch.cat([c3_1, c3_2], dim = 1) #(8,640,16,16)
+        # fmaps_3 = fmaps_3.view(n,sets,fmaps_3.shape[2],fmaps_3.shape[3]) #(8,2,320,16,16)
+        # fmaps_3 = torch.sum(fmaps_3, dim=1) #(8,320,16,16)
+
+        #### Absolute Difference ####
+        fdiff_4 = torch.abs(c4_1, c4_2)
+        fdiff_3 = torch.abs(c3_1, c3_2)
+
+        #### MLP Mixer ####
+        # Stage4: x1/32
+        mlp_4 = mlp_4(fdiff_4)
+
+        # Stage3: x1/16
+        mlp_3 = mlp_3(fdiff_3)
+
+        
+
+
+
+
+
+
+
+
+
+        p_c4  = self.make_pred_c4(_c4) # (8,2,8,8)
+        outputs.append(p_c4)
+        _c4_up= resize(_c4, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
+
+        # Stage 3: x1/16 scale
+        p_c3  = self.make_pred_c3(_c3) # (8,2,16,16)
+        outputs.append(p_c3)
+        _c3_up= resize(_c3, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
+        
+        # Linear Fusion of difference image from all scales
+        _c = self.linear_fuse(torch.cat([_c4_up, _c3_up],dim=1)) #(8,256,64,64)
+
+        #Upsampling x2 (x1/2 scale)
+        x = self.convd2x(_c)
+        #Residual block
+        x = self.dense_2x(x)
+        #Upsampling x2 (x1 scale)
+        x = self.convd1x(x)
+        #Residual block
+        x = self.dense_1x(x) #(8,256,256,256)
+        #Final prediction
+        cp = self.change_probability(x) #(8,2,256,256)
+        
+        outputs.append(cp)
+
+        if self.output_softmax:
+            temp = outputs
+            outputs = []
+            for pred in temp:
+                outputs.append(self.active(pred))
+
+        return outputs   # output not compared with gt_labels yet!
 
 # ScratchFormer:
 class ScratchFormer(nn.Module):
@@ -389,7 +489,7 @@ class ScratchFormer(nn.Module):
                                              norm_layer=partial(LayerNorm, eps=1e-6), depths=self.depths)
         
         #Transformer Decoder
-        self.TDec_x2   = DecoderTransformer(align_corners=False, in_channels = self.embed_dims, embedding_dim= self.embedding_dim,
+        self.TDec_x2   = DecoderTransformer2(align_corners=False, in_channels = self.embed_dims, embedding_dim= self.embedding_dim,
                                             output_nc=output_nc, decoder_softmax = decoder_softmax)
 
     def forward(self, x1, x2):

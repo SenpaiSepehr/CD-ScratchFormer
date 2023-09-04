@@ -132,7 +132,6 @@ class EncoderBlock(nn.Module):
         skip = x       
         x = self.layer_norm1(skip)
         x = self.deform_grid(x) #(8,64,64,64)
-        print("x deform shape", x.shape)
         x = self.attn(x)        #(8,64,64,64)
         x = self.drop_path_1(self.layer_scale_1.unsqueeze(-1).unsqueeze(-1) * x)
         out = x  + skip #(8,64,64,64)
