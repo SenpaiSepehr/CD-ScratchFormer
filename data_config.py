@@ -16,7 +16,7 @@ class DataConfig:
             self.root_dir = '../dataset/CD/WHU-CD-256/'
         elif data_name == 'SYSU':
             self.label_transform = "norm"
-            self.root_dir = '../dataset/CD/SYSU-CD-256/'
+            self.root_dir = '/app/data/'
         elif data_name == 'CDD':
             self.label_transform = "norm"
             self.root_dir =  '../dataset/CD/CDD-CD-256/'
@@ -26,7 +26,7 @@ class DataConfig:
 
 
 if __name__ == '__main__':
-    data = DataConfig().get_data_config(data_name='LEVIR')
+    data = DataConfig().get_data_config(data_name='SYSU')
     print(data.data_name)
     print(data.root_dir)
     print(data.label_transform)
