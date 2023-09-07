@@ -11,6 +11,8 @@ def cross_entropy(input, target, weight=None, reduction='mean',ignore_index=255)
     :param weight: torch.Tensor, C
     :return: torch.Tensor [0]
     """
+    # input shape (2,256,256)?? output shape (16,1,256,256)
+
     target = target.long()
     if target.dim() == 4:
         target = torch.squeeze(target, dim=1)

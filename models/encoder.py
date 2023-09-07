@@ -184,59 +184,6 @@ class CEFF(nn.Module):
         feats_V = torch.sum(inp_feats*attention_vectors, dim=1) #(8,256,8,8)
         
         return feats_V        
-    
-
-class CEFF2(nn.Module):
-    """Spatial Attention"""
-    def __init__(self, in_channels, height = 2, reduction = 8, bias = False):
-        super(CEFF2, self).__init__()
-
-        self.height = height
-
-        output_embed = in_channels//8
-        self.query = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1))
-        self.key = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1))
-        self.value = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1))
-
-        self.softmax = nn.Softmax(dim = 1)
-
-        # Scaling factor
-        self.gamma = nn.Parameter(torch.zeros(1))
-
-    def forward(self, inp_feats):
-        batch_size = inp_feats[0].shape[0]
-        n_feats = inp_feats[0].shape[1]
-        dim_width = inp_feats[0].shape[2]
-        dim_height = inp_feats[0].shape[3]
-
-        # Reshaping pre-post image features
-        inp_feats = torch.cat(inp_feats, dim=1)
-        inp_feats = inp_feats.view(batch_size, self.height, n_feats,dim_width, dim_height) 
-        # (8,2,256,32,32)
-        sum_feats = torch.sum(inp_feats, dim=1) # (8,256,32,32)
-
-        shape_query = self.query(sum_feats).view(batch_size, -1, dim_width*dim_height).permute(0,2,1)
-        # (8,1024,32) -> (8,1024,256)
-        shape_key = self.key(sum_feats).view(batch_size, -1, dim_width*dim_height)
-        # (8,32,1024) -> (8,1024,256)
-        shape_val = self.value(sum_feats).view(batch_size, -1, dim_width*dim_height)
-        # (8,32,1024) -> (8,256,1024)
-
-        # Matrix Multiplication of Query & Key
-        mm_qk = torch.bmm(shape_query,shape_key) # (8,1024,1024)
-
-        # Find similarities
-        spatial_attn = self.softmax(mm_qk) #(8,1024,1024)
-
-        # Project the spatial attention on Value
-        new_feat = torch.bmm(shape_val, spatial_attn.permute(0,2,1)) # (8,32,1024) -> (8,256,1024)
-        new_feat = new_feat.view(batch_size, n_feats, dim_width, dim_height) # (8,256,32,32)
-
-        # Scaling param + summation
-        new_feat = self.gamma*new_feat + sum_feats
-
-        return new_feat
-
 
 class LayerNorm(nn.Module):
     r""" From ConvNeXt (https://arxiv.org/pdf/2201.03545.pdf)

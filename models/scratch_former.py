@@ -3,13 +3,12 @@ import torch.nn as nn
 import torch.nn.functional
 import torch.nn.functional as F
 from functools import partial
-import torch.nn.functional as F
 
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 import math
 
-from models.encoder import EncoderBlock, CEFF, CEFF2, LayerNorm
-from mixer import MLPMixer
+from models.encoder import EncoderBlock, CEFF, LayerNorm
+from models.mixer import MLPMixer
 
 class ConvLayer(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding):
@@ -278,8 +277,8 @@ class DecoderTransformer(nn.Module):
         
         #Final linear fusion layer
 
-        desired_in_channels = int(embedding_dim*len(in_channels)/2)
-        #desired_in_channels = int(embedding_dim*len(in_channels))
+        #desired_in_channels = int(embedding_dim*len(in_channels)/2)
+        desired_in_channels = int(embedding_dim*len(in_channels))
         self.linear_fuse = nn.Sequential(
            nn.Conv2d(in_channels=desired_in_channels, out_channels=self.embedding_dim, kernel_size=1),
             nn.BatchNorm2d(self.embedding_dim)
@@ -328,25 +327,24 @@ class DecoderTransformer(nn.Module):
         outputs.append(p_c3)
         _c3_up= resize(_c3, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
         
-        # # Stage 2: x1/8 scale
-        # _c2_1 = self.linear_c2(c2_1).permute(0,2,1).reshape(n, -1, c2_1.shape[2], c2_1.shape[3])
-        # _c2_2 = self.linear_c2(c2_2).permute(0,2,1).reshape(n, -1, c2_2.shape[2], c2_2.shape[3])
-        # _c2   = self.ceff3([_c2_1, _c2_2]) # (8,256,32,32)
-        # p_c2  = self.make_pred_c2(_c2) # (8,2,32,32)
-        # outputs.append(p_c2)
-        # _c2_up= resize(_c2, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
+        # Stage 2: x1/8 scale
+        _c2_1 = self.linear_c2(c2_1).permute(0,2,1).reshape(n, -1, c2_1.shape[2], c2_1.shape[3])
+        _c2_2 = self.linear_c2(c2_2).permute(0,2,1).reshape(n, -1, c2_2.shape[2], c2_2.shape[3])
+        _c2   = self.ceff3([_c2_1, _c2_2]) # (8,256,32,32)
+        p_c2  = self.make_pred_c2(_c2) # (8,2,32,32)
+        outputs.append(p_c2)
+        _c2_up= resize(_c2, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
 
-        # # Stage 1: x1/4 scale
-        # _c1_1 = self.linear_c1(c1_1).permute(0,2,1).reshape(n, -1, c1_1.shape[2], c1_1.shape[3])
-        # _c1_2 = self.linear_c1(c1_2).permute(0,2,1).reshape(n, -1, c1_2.shape[2], c1_2.shape[3])
-        # _c1   = self.ceff4([_c1_1, _c1_2])
-        # p_c1  = self.make_pred_c1(_c1)
-        # outputs.append(p_c1)
-        
+        # Stage 1: x1/4 scale
+        _c1_1 = self.linear_c1(c1_1).permute(0,2,1).reshape(n, -1, c1_1.shape[2], c1_1.shape[3])
+        _c1_2 = self.linear_c1(c1_2).permute(0,2,1).reshape(n, -1, c1_2.shape[2], c1_2.shape[3])
+        _c1   = self.ceff4([_c1_1, _c1_2])
+        p_c1  = self.make_pred_c1(_c1)
+        outputs.append(p_c1) 
 
         # Linear Fusion of difference image from all scales
-        #_c = self.linear_fuse(torch.cat([_c4_up, _c3_up, _c2_up, _c1],dim=1))
-        _c = self.linear_fuse(torch.cat([_c4_up, _c3_up],dim=1)) #(8,256,64,64)
+        _c = self.linear_fuse(torch.cat([_c4_up, _c3_up, _c2_up, _c1],dim=1))
+        #_c = self.linear_fuse(torch.cat([_c4_up, _c3_up],dim=1)) #(8,256,64,64)
 
         #Upsampling x2 (x1/2 scale)
         x = self.convd2x(_c)
@@ -374,7 +372,7 @@ class DecoderTransformer2(nn.Module):
     Transformer Decoder
     """
     def __init__(self, align_corners=True, in_channels=[64, 128, 320, 512], embedding_dim=256, output_nc=2, decoder_softmax=False):
-        super(DecoderTransformer, self).__init__()
+        super(DecoderTransformer2, self).__init__()
         
         #settings
         self.align_corners   = align_corners
@@ -385,13 +383,27 @@ class DecoderTransformer2(nn.Module):
 
         # MLP Mixer
         featureDifference_size = [8,16]
-
         self.mlp_mix4 = MLPMixer(image_size=featureDifference_size[0], channels=c4_in_channels,
-                                 patch_size=8, dim=512, depth=4)
+                                 patch_size=4, dim=512, depth=4)
         self.mlp_mix3 = MLPMixer(image_size=featureDifference_size[1], channels=c3_in_channels,
-                                 patch_size=8, dim=512, depth=4)
+                                 patch_size=4, dim=512, depth=4)
+        
+        self.linear4 = MLP(input_dim= c4_in_channels, embed_dim=self.embedding_dim)
+        self.linear3 = MLP(input_dim=c3_in_channels, embed_dim=self.embedding_dim)
 
-       
+        desired_in_channels = int(embedding_dim*len(in_channels)/2)
+        self.linear_fuse = nn.Sequential(
+           nn.Conv2d(in_channels=desired_in_channels, out_channels=self.embedding_dim, kernel_size=1),
+            nn.BatchNorm2d(self.embedding_dim)
+        )
+
+                #Final predction head
+        self.convd2x    = UpsampleConvLayer(self.embedding_dim, self.embedding_dim, kernel_size=4, stride=2)
+        self.dense_2x   = nn.Sequential( ResidualBlock(self.embedding_dim))
+        self.convd1x    = UpsampleConvLayer(self.embedding_dim, self.embedding_dim, kernel_size=4, stride=2)
+        self.dense_1x   = nn.Sequential( ResidualBlock(self.embedding_dim))
+        self.change_probability = ConvLayer(self.embedding_dim, self.output_nc, kernel_size=3, stride=1, padding=1)
+
         #Final activation
         self.output_softmax     = decoder_softmax
         self.active             = nn.Sigmoid()
@@ -404,65 +416,49 @@ class DecoderTransformer2(nn.Module):
 
 
         ############## MLP decoder on C3-C4 ###########
-        n, c, h, w = c4_1.shape
+        n4, c4, h4, w4 = c4_1.shape
+        n3, c3, h3, w3 = c3_1.shape
+
         sets = 2
         outputs = []
-        # Stage 4: x1/32 scale
 
-        # #### The Summation of Pre Post Features ####
-        # fmaps_4 = torch.cat([c4_1, c4_2], dim = 1) # (8,1024,8,8)
-        # fmaps_4 = fmaps_4.view(n,sets,c,fmaps_4.shape[2], fmaps_4.shape[3]) #(8,2,512,8,8)
-        # fmaps_4 = torch.sum(fmaps_4, dim=1) #(8,512,8,8)
+        #### Concat & Sum ####
+        feats4_cat = torch.cat([c4_1,c4_2], dim=1).view(n4,sets,c4,h4,w4)
+        feats4_sum = torch.sum(feats4_cat, dim=1)
 
-        # fmaps_3 = torch.cat([c3_1, c3_2], dim = 1) #(8,640,16,16)
-        # fmaps_3 = fmaps_3.view(n,sets,fmaps_3.shape[2],fmaps_3.shape[3]) #(8,2,320,16,16)
-        # fmaps_3 = torch.sum(fmaps_3, dim=1) #(8,320,16,16)
+        feats3_cat = torch.cat([c3_1,c3_2], dim=1).view(n3,sets,c3,h3,w3)
+        feats3_sum = torch.sum(feats3_cat, dim=1)
 
-        #### Absolute Difference ####
-        fdiff_4 = torch.abs(c4_1, c4_2)
-        fdiff_3 = torch.abs(c3_1, c3_2)
+        #### Difference Module
 
-        #### MLP Mixer ####
-        # Stage4: x1/32
-        mlp_4 = mlp_4(fdiff_4)
 
-        # Stage3: x1/16
-        mlp_3 = mlp_3(fdiff_3)
+        #### MLP Mixer
+        feat4_mlp = self.mlp_mix4(feats4_sum)  # (8,512,8,8)
+        feat3_mlp = self.mlp_mix3(feats3_sum) # (8,320,16,16)
 
+        #### Unify along Channel Dim
+        feats4 = self.linear4(feat4_mlp).permute(0,2,1).reshape(n4,-1,w4,h4) # (8,256,8,8)
+        feats3 = self.linear3(feat3_mlp).permute(0,2,1).reshape(n3,-1,w3,h3) # (8,256,16,16)
         
+        #### Interpolate Resolution to 64x64
+        feats4 = resize(feats4, size=c1_1.size()[2:], mode='bilinear', align_corners=False)
+        feats3 = resize(feats3, size=c1_1.size()[2:], mode='bilinear', align_corners=False)
 
-
-
-
-
-
-
-
-
-        p_c4  = self.make_pred_c4(_c4) # (8,2,8,8)
-        outputs.append(p_c4)
-        _c4_up= resize(_c4, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
-
-        # Stage 3: x1/16 scale
-        p_c3  = self.make_pred_c3(_c3) # (8,2,16,16)
-        outputs.append(p_c3)
-        _c3_up= resize(_c3, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
+        #### Fuse Enrchied Difference Features
+        feats = self.linear_fuse(torch.cat([feats4,feats3],dim=1)) #(8,256,64,64)
         
-        # Linear Fusion of difference image from all scales
-        _c = self.linear_fuse(torch.cat([_c4_up, _c3_up],dim=1)) #(8,256,64,64)
-
         #Upsampling x2 (x1/2 scale)
-        x = self.convd2x(_c)
+        x = self.convd2x(feats)
         #Residual block
         x = self.dense_2x(x)
         #Upsampling x2 (x1 scale)
         x = self.convd1x(x)
         #Residual block
         x = self.dense_1x(x) #(8,256,256,256)
-        #Final prediction
-        cp = self.change_probability(x) #(8,2,256,256)
-        
-        outputs.append(cp)
+        #Logits
+        logits = self.change_probability(x) #(8,2,256,256)
+
+        outputs.append(logits)
 
         if self.output_softmax:
             temp = outputs
@@ -489,7 +485,7 @@ class ScratchFormer(nn.Module):
                                              norm_layer=partial(LayerNorm, eps=1e-6), depths=self.depths)
         
         #Transformer Decoder
-        self.TDec_x2   = DecoderTransformer2(align_corners=False, in_channels = self.embed_dims, embedding_dim= self.embedding_dim,
+        self.TDec_x2   = DecoderTransformer(align_corners=False, in_channels = self.embed_dims, embedding_dim= self.embedding_dim,
                                             output_nc=output_nc, decoder_softmax = decoder_softmax)
 
     def forward(self, x1, x2):
