@@ -39,7 +39,7 @@ if __name__ == '__main__':
     # ------------
     parser = ArgumentParser()
     parser.add_argument('--gpu_ids', type=str, default='0,1', help='gpu ids: 0,1, 6,7. use -1 for CPU')
-    parser.add_argument('--project_name', default='./base1.sep.07', type=str)
+    parser.add_argument('--project_name', default='./optimize1.sep.12', type=str)
     parser.add_argument('--checkpoint_root', default='./checkpoints', type=str)
     parser.add_argument('--vis_root', default='./output_visuals', type=str)
 
