@@ -384,9 +384,9 @@ class DecoderTransformer2(nn.Module):
         # MLP Mixer
         featureDifference_size = [8,16]
         self.mlp_mix4 = MLPMixer(image_size=featureDifference_size[0], channels=c4_in_channels,
-                                 patch_size=4, dim=512, depth=4)
+                                 patch_size=4, dim=512, depth=1)
         self.mlp_mix3 = MLPMixer(image_size=featureDifference_size[1], channels=c3_in_channels,
-                                 patch_size=4, dim=512, depth=4)
+                                 patch_size=4, dim=512, depth=1)
         
         self.linear4 = MLP(input_dim= c4_in_channels, embed_dim=self.embedding_dim)
         self.linear3 = MLP(input_dim=c3_in_channels, embed_dim=self.embedding_dim)
@@ -422,15 +422,12 @@ class DecoderTransformer2(nn.Module):
         sets = 2
         outputs = []
 
-        #### Concat & Sum ####
+        #### Difference / Aggregation Module
         feats4_cat = torch.cat([c4_1,c4_2], dim=1).view(n4,sets,c4,h4,w4)
         feats4_sum = torch.sum(feats4_cat, dim=1)
 
         feats3_cat = torch.cat([c3_1,c3_2], dim=1).view(n3,sets,c3,h3,w3)
         feats3_sum = torch.sum(feats3_cat, dim=1)
-
-        #### Difference Module
-
 
         #### MLP Mixer
         feat4_mlp = self.mlp_mix4(feats4_sum)  # (8,512,8,8)
@@ -468,6 +465,8 @@ class DecoderTransformer2(nn.Module):
 
         return outputs   # output not compared with gt_labels yet!
 
+
+
 # ScratchFormer:
 class ScratchFormer(nn.Module):
 
@@ -485,7 +484,7 @@ class ScratchFormer(nn.Module):
                                              norm_layer=partial(LayerNorm, eps=1e-6), depths=self.depths)
         
         #Transformer Decoder
-        self.TDec_x2   = DecoderTransformer(align_corners=False, in_channels = self.embed_dims, embedding_dim= self.embedding_dim,
+        self.TDec_x2   = DecoderTransformer2(align_corners=False, in_channels = self.embed_dims, embedding_dim= self.embedding_dim,
                                             output_nc=output_nc, decoder_softmax = decoder_softmax)
 
     def forward(self, x1, x2):
