@@ -7,6 +7,8 @@
 
 from argparse import ArgumentParser
 import torch
+import optuna
+
 from models.trainer import *
 import os
 
@@ -20,7 +22,7 @@ def train(args):
     dataloaders = utils.get_loaders(args)
     model = CDTrainer(args=args, dataloaders=dataloaders)
     model.summarize_network(args=args)
-    model.train_models()
+    #model.train_models()
 
 
 def test(args):
@@ -32,14 +34,31 @@ def test(args):
 
     model.eval_models()
 
+def objective(trial):
+    # patch_size = trial.suggest_categorical('patch_size', [2,4,8,16])
+    global index
+
+    patch_size_list = [2,4,8,16]
+    patch_size = patch_size_list[index]
+    args.patch_size = patch_size
+    print(f"Optuna Hyperparameter [Patch Size: {patch_size}]")
+    index += 1
+
+    dataloaders = utils.get_loaders(args)
+    model = CDTrainer(args=args, dataloaders=dataloaders)
+    model.train_models()
+
+    validation_acc = model.validation_acc
+    return validation_acc
+
 
 if __name__ == '__main__':
     # ------------
     # args
     # ------------
     parser = ArgumentParser()
-    parser.add_argument('--gpu_ids', type=str, default='0,1', help='gpu ids: 0,1, 6,7. use -1 for CPU')
-    parser.add_argument('--project_name', default='./optimize1.sep.12', type=str)
+    parser.add_argument('--gpu_ids', type=str, default='7', help='gpu ids: 0,1, 6,7. use -1 for CPU')
+    parser.add_argument('--project_name', default='./optuna/TestB2/sep15', type=str)
     parser.add_argument('--checkpoint_root', default='./checkpoints', type=str)
     parser.add_argument('--vis_root', default='./output_visuals', type=str)
 
@@ -47,7 +66,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', default=32, type=int)       # origianl: 8
     parser.add_argument('--dataset', default='CDDataset', type=str)
     parser.add_argument('--data_name', default='SYSU', type=str)
-    parser.add_argument('--batch_size', default=16, type=int)        # original: 16
+    parser.add_argument('--batch_size', default=8, type=int)        # original: 16
     parser.add_argument('--split', default="train", type=str)
     parser.add_argument('--split_val', default="val", type=str)
     parser.add_argument('--img_size', default=256, type=int)        # original: 512
@@ -55,7 +74,7 @@ if __name__ == '__main__':
 
     # model
     parser.add_argument('--n_class', default=2, type=int)
-    parser.add_argument('--embed_dim', default=256, type=int)
+    parser.add_argument('--embed_dim', default=128, type=int)
     parser.add_argument('--pretrain', default=None, type=str)
     parser.add_argument('--multi_scale_train', default=False, type=bool)
     parser.add_argument('--multi_scale_infer', default=False, type=bool)
@@ -66,9 +85,13 @@ if __name__ == '__main__':
     # optimizer
     parser.add_argument('--optimizer', default='adamw', type=str)
     parser.add_argument('--lr', default=0.00041, type=float)
-    parser.add_argument('--max_epochs', default=100, type=int)
+    parser.add_argument('--max_epochs', default=30, type=int)
     parser.add_argument('--lr_policy', default='linear', type=str, help='linear | step')
     parser.add_argument('--lr_decay_iters', default=[100], type=int)
+
+    # optuna
+    parser.add_argument('--patch_size', default=2, type=int)
+    parser.add_argument('--num_trials', default=0, type=int)
     
     args = parser.parse_args()
     utils.get_device(args)
@@ -82,6 +105,16 @@ if __name__ == '__main__':
     args.vis_dir = os.path.join(args.vis_root, args.project_name)
     os.makedirs(args.vis_dir, exist_ok=True)
 
-    train(args)
+    # optimization
+    study = optuna.create_study(direction='maximize')
+    index = 0
+    study.optimize(objective, n_trials = 4)
+
+    best_params = study.best_params
+    best_patch_size = best_params['patch_size']
+
+    print(f"Best Patch Size: {best_patch_size}")
+
+    #train(args)
 
     #test(args)
