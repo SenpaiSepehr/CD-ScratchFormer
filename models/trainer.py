@@ -91,6 +91,9 @@ class CDTrainer():
 
         self.shuffle_AB = args.shuffle_AB
 
+        # validation log
+        self.validation_acc = 0.0
+
         # define the loss functions
         self.multi_scale_train = args.multi_scale_train
         self.multi_scale_infer = args.multi_scale_infer
@@ -263,6 +266,8 @@ class CDTrainer():
         self.logger.write(message+'\n')
         self.logger.write('\n')
 
+        self.validation_acc = self.epoch_acc
+
     def _update_checkpoints(self):
 
         # save current model
@@ -331,7 +336,7 @@ class CDTrainer():
 
     def train_models(self):
 
-        self._load_checkpoint()
+        #self._load_checkpoint()
 
         # loop over the dataset multiple times
         for self.epoch_id in range(self.epoch_to_start, self.max_num_epochs):
@@ -380,5 +385,6 @@ class CDTrainer():
     def summarize_network(self, args):
         model = define_G(args=args, gpu_ids=args.gpu_ids).to(self.device)
         summary(model, input_size = [(args.batch_size,3,256,256),(args.batch_size,3,256,256)],
-                         device = 'cuda')
+                         device = 'cuda', verbose = 1, col_names = ["input_size", "output_size","num_params",
+                                                                    "params_percent"])
 
