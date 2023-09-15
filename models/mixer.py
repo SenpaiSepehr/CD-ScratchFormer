@@ -1,12 +1,5 @@
 
 """
-INPUT: difference feature map dF(b,256,x,y) from stags 1 --> 4
-
-Perform token and channel mixing on individual dFs
-At the end, spatially scale the dFs to match image res.
-
-OUTPUT: enriched dF (b,256,256,256)
-
 reference: github.com/lucidrains/mlp-mixer-pytorch
 """
 
