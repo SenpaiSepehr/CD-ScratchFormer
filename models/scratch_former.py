@@ -393,14 +393,19 @@ class DecoderTransformer2(nn.Module):
         self.share_mixer = MLPMixer(image_size=featureDifference_size[2],channels=c2_in_channels,
                                     patch_size=patch_size,dim=512,depth=1)
         
-        self.linear4 = MLP(input_dim= c4_in_channels, embed_dim=c2_in_channels)
-        self.linear3 = MLP(input_dim=c3_in_channels, embed_dim=c2_in_channels)
+        self.linear4 = MLP(input_dim= c4_in_channels*2, embed_dim=c2_in_channels)
+        self.linear3 = MLP(input_dim=c3_in_channels*2, embed_dim=c2_in_channels)
 
         desired_in_channels = int(embedding_dim*len(in_channels)/2)
         self.linear_fuse = nn.Sequential(
            nn.Conv2d(in_channels=desired_in_channels, out_channels=self.embedding_dim, kernel_size=1),
             nn.BatchNorm2d(self.embedding_dim)
         )
+
+        # Conv Difference Module
+        self.conv_diff4 = conv_diff(c4_in_channels*2,c4_in_channels*2)
+        self.conv_diff3 = conv_diff(c3_in_channels*2, c3_in_channels*2)
+
 
                 #Final predction head
         self.convd2x    = UpsampleConvLayer(self.embedding_dim, self.embedding_dim, kernel_size=4, stride=2)
@@ -429,18 +434,29 @@ class DecoderTransformer2(nn.Module):
         sets = 2
         outputs = []
 
-        #### Difference / Aggregation Module
+        #### Difference Module
+        ## Aggregation
+
         # feats4_cat = torch.cat([c4_1,c4_2], dim=1).view(n4,sets,c4,h4,w4)
         # feats4_sum = torch.sum(feats4_cat, dim=1) #(8,512,8,8)
-        feats4_sub = torch.abs(c4_1 - c4_2)
-
         # feats3_cat = torch.cat([c3_1,c3_2], dim=1).view(n3,sets,c3,h3,w3)
         # feats3_sum = torch.sum(feats3_cat, dim=1) #(8,320,16,16)
-        feats3_sub = torch.abs(c3_1 - c3_2)
+
+        ## Subtraction
+        # feats4_sub = torch.abs(c4_1 - c4_2)
+        # feats3_sub = torch.abs(c3_1 - c3_2)
+
+        ## Concat
+        feats4_concat = torch.cat([c4_1,c4_2], dim=1) #(8,1024,8,8)
+        feats3_concat = torch.cat([c3_1, c3_2], dim=1) #(8,640,8,8)
+
+        ## Conv
+        feats4_conv = self.conv_diff4(feats4_concat)
+        feats3_conv = self.conv_diff3(feats3_concat)
 
         ##### Reshape (compress channel, expand resolution)
-        feats4 = self.linear4(feats4_sub).permute(0,2,1).reshape(n4,-1,w4,h4) #(8,128,8,8)
-        feats3 = self.linear3(feats3_sub).permute(0,2,1).reshape(n3,-1,w3,h3) #(8,128,16,16)
+        feats4 = self.linear4(feats4_conv).permute(0,2,1).reshape(n4,-1,w4,h4) #(8,128,8,8)
+        feats3 = self.linear3(feats3_conv).permute(0,2,1).reshape(n3,-1,w3,h3) #(8,128,16,16)
 
         feats4 = resize(feats4, size=c2_1.size()[2:], mode='bilinear', align_corners=False) #(8,128,32,32)
         feats3 = resize(feats3, size=c2_1.size()[2:], mode='bilinear', align_corners=False) #(8,128,32,32)
@@ -452,6 +468,7 @@ class DecoderTransformer2(nn.Module):
         #### Fuse Enrchied Difference Features
         feats = self.linear_fuse(torch.cat([feat4_mlp,feat3_mlp],dim=1)) #(8,128,32,32)
         x = feats
+
         #Upsampling #(8,128,32,32) -> (8,128,128,128)
         for i in range(2):
             x = self.convd2x(x)
