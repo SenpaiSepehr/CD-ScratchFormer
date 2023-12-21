@@ -448,8 +448,8 @@ class MLPDecoder(nn.Module):
         # x = fused_mlp
 
         ## MLP Mixer (Model A = share_mixer, Model B = mlp_mix)
-        feat4_mlp = self.mlp_mix4(feats4)  #(8,128,32,32)
-        feat3_mlp = self.mlp_mix3(feats3)  #(8,128,32,32)
+        feat4_mlp = self.share_mixer(feats4)  #(8,128,32,32)
+        feat3_mlp = self.share_mixer(feats3)  #(8,128,32,32)
         feats = self.linear_fuse(torch.cat([feat4_mlp,feat3_mlp],dim=1)) #(8,128,32,32)
         x = feats
 
@@ -507,6 +507,6 @@ class ScratchFormer(nn.Module):
         # x1 (8,3,256,256)
         [fx1, fx2] = [self.Tenc_x2(x1), self.Tenc_x2(x2)]
 
-        cp = self.TDec_x1(fx1, fx2)
+        cp = self.TDec_x2(fx1, fx2)
 
         return cp
