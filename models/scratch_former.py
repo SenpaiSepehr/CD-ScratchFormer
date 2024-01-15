@@ -277,8 +277,8 @@ class DecoderTransformer(nn.Module):
         
         #Final linear fusion layer
 
-        desired_in_channels = int(embedding_dim*len(in_channels)/2)
-        #desired_in_channels = int(embedding_dim*len(in_channels))
+        #desired_in_channels = int(embedding_dim*len(in_channels)/2)
+        desired_in_channels = int(embedding_dim*len(in_channels))
         self.linear_fuse = nn.Sequential(
            nn.Conv2d(in_channels=desired_in_channels, out_channels=self.embedding_dim, kernel_size=1),
             nn.BatchNorm2d(self.embedding_dim)
@@ -327,24 +327,24 @@ class DecoderTransformer(nn.Module):
         outputs.append(p_c3)
         _c3_up= resize(_c3, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
         
-        # # Stage 2: x1/8 scale
-        # _c2_1 = self.linear_c2(c2_1).permute(0,2,1).reshape(n, -1, c2_1.shape[2], c2_1.shape[3])
-        # _c2_2 = self.linear_c2(c2_2).permute(0,2,1).reshape(n, -1, c2_2.shape[2], c2_2.shape[3])
-        # _c2   = self.ceff3([_c2_1, _c2_2]) # (8,256,32,32)
-        # p_c2  = self.make_pred_c2(_c2) # (8,2,32,32)
-        # outputs.append(p_c2)
-        # _c2_up= resize(_c2, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
+        # Stage 2: x1/8 scale
+        _c2_1 = self.linear_c2(c2_1).permute(0,2,1).reshape(n, -1, c2_1.shape[2], c2_1.shape[3])
+        _c2_2 = self.linear_c2(c2_2).permute(0,2,1).reshape(n, -1, c2_2.shape[2], c2_2.shape[3])
+        _c2   = self.ceff3([_c2_1, _c2_2]) # (8,256,32,32)
+        p_c2  = self.make_pred_c2(_c2) # (8,2,32,32)
+        outputs.append(p_c2)
+        _c2_up= resize(_c2, size=c1_2.size()[2:], mode='bilinear', align_corners=False) #(8,256,64,64)
 
-        # # Stage 1: x1/4 scale
-        # _c1_1 = self.linear_c1(c1_1).permute(0,2,1).reshape(n, -1, c1_1.shape[2], c1_1.shape[3])
-        # _c1_2 = self.linear_c1(c1_2).permute(0,2,1).reshape(n, -1, c1_2.shape[2], c1_2.shape[3])
-        # _c1   = self.ceff4([_c1_1, _c1_2])
-        # p_c1  = self.make_pred_c1(_c1)
-        # outputs.append(p_c1) 
+        # Stage 1: x1/4 scale
+        _c1_1 = self.linear_c1(c1_1).permute(0,2,1).reshape(n, -1, c1_1.shape[2], c1_1.shape[3])
+        _c1_2 = self.linear_c1(c1_2).permute(0,2,1).reshape(n, -1, c1_2.shape[2], c1_2.shape[3])
+        _c1   = self.ceff4([_c1_1, _c1_2])
+        p_c1  = self.make_pred_c1(_c1)
+        outputs.append(p_c1) 
 
         # Linear Fusion of difference image from all scales
-        # _c = self.linear_fuse(torch.cat([_c4_up, _c3_up, _c2_up, _c1],dim=1))
-        _c = self.linear_fuse(torch.cat([_c4_up, _c3_up],dim=1)) #(8,256,64,64)
+        _c = self.linear_fuse(torch.cat([_c4_up, _c3_up, _c2_up, _c1],dim=1))
+        # _c = self.linear_fuse(torch.cat([_c4_up, _c3_up],dim=1)) #(8,256,64,64)
 
         #Upsampling x2 (x1/2 scale)
         x = self.convd2x(_c)
@@ -371,7 +371,8 @@ class MLPDecoder(nn.Module):
     """
     Transformer Decoder
     """
-    def __init__(self, align_corners=True, in_channels=[64, 128, 320, 512], patch_size = 2, embedding_dim=256, output_nc=2, decoder_softmax=False):
+    def __init__(self, align_corners=True, in_channels=[64, 128, 320, 512], embedding_dim=256, 
+                 patch_size = 2, decoder_type = 'decoderA', output_nc=2, decoder_softmax=False):
         super(MLPDecoder, self).__init__()
         
         #settings
@@ -380,7 +381,7 @@ class MLPDecoder(nn.Module):
         self.embedding_dim   = embedding_dim  # output.dim = input.dim
         self.output_nc       = output_nc
         self.patch_size = patch_size
-        print("patch size = ", self.patch_size)
+        self.decoder_type = decoder_type
         c1_in_channels, c2_in_channels, c3_in_channels, c4_in_channels = self.in_channels
 
         # MLP Mixer
@@ -389,7 +390,6 @@ class MLPDecoder(nn.Module):
                                  patch_size=patch_size, dim=512, depth=1)
         self.mlp_mix3 = MLPMixer(image_size=img_res[2], channels=c2_in_channels,
                                  patch_size=patch_size, dim=512, depth=1)
-        
         self.share_mixer = MLPMixer(image_size=img_res[2],channels=c2_in_channels,
                                     patch_size=patch_size,dim=512,depth=1)
         
@@ -402,12 +402,7 @@ class MLPDecoder(nn.Module):
             nn.BatchNorm2d(self.embedding_dim)
         )
 
-        # Conv Difference Module
-        self.conv_diff4 = conv_diff(c4_in_channels*2,c4_in_channels*2)
-        self.conv_diff3 = conv_diff(c3_in_channels*2, c3_in_channels*2)
-
-
-                #Final predction head
+        #Final predction head
         self.convd2x    = UpsampleConvLayer(self.embedding_dim, self.embedding_dim, kernel_size=4, stride=2)
         self.dense_2x   = nn.Sequential( ResidualBlock(self.embedding_dim))
         self.convd1x    = UpsampleConvLayer(self.embedding_dim, self.embedding_dim, kernel_size=4, stride=2)
@@ -442,15 +437,23 @@ class MLPDecoder(nn.Module):
         feats4 = resize(feats4, size=c2_1.size()[2:], mode='bilinear', align_corners=False) #(8,128,32,32)
         feats3 = resize(feats3, size=c2_1.size()[2:], mode='bilinear', align_corners=False) #(8,128,32,32)
     
-        #### Fuse Enrchied Difference Features  (Model C)
-        # feats = self.linear_fuse(torch.cat([feats4,feats3],dim=1)) #(8,128,32,32)
-        # fused_mlp = self.share_mixer(feats)
-        # x = fused_mlp
+        if self.decoder_type == 'decoderA':
+            feats4_mlp = self.share_mixer(feats4)
+            feats3_mlp = self.share_mixer(feats3)
+            feats = self.linear_fuse(torch.cat([feats4_mlp, feats3_mlp], dim=1))
 
-        ## MLP Mixer (Model A = share_mixer, Model B = mlp_mix)
-        feat4_mlp = self.share_mixer(feats4)  #(8,128,32,32)
-        feat3_mlp = self.share_mixer(feats3)  #(8,128,32,32)
-        feats = self.linear_fuse(torch.cat([feat4_mlp,feat3_mlp],dim=1)) #(8,128,32,32)
+        elif self.decoder_type == 'decoderB':
+            feats4_mlp = self.mlp_mix4(feats4)
+            feats3_mlp = self.mlp_mix3(feats3)
+            feats = self.linear_fuse(torch.cat([feats4_mlp, feats3_mlp], dim=1))
+
+        elif self.decoder_type == 'decoderC':
+            fused_feats = self.linear_fuse(torch.cat((feats4, feats3), dim=1))
+            feats = self.share_mixer(fused_feats)
+        
+        else:
+            raise NotImplementedError('Decoder type [%s] is not supported' % self.decoder_type)
+
         x = feats
 
         #Upsampling #(8,128,32,32) -> (8,128,128,128)
@@ -481,7 +484,7 @@ class MLPDecoder(nn.Module):
 # ScratchFormer:
 class ScratchFormer(nn.Module):
 
-    def __init__(self, input_nc=3, output_nc=2, decoder_softmax=False, embed_dim=256, patch_size = 2):
+    def __init__(self, input_nc=3, output_nc=2, decoder_softmax=False, embed_dim=256, patch_size=2, decoder_type='decoderA'):
         super(ScratchFormer, self).__init__()
         #Transformer Encoder
         self.embed_dims = [64, 128, 320, 512]
@@ -490,6 +493,7 @@ class ScratchFormer(nn.Module):
         self.attn_drop = 0.1
         self.drop_path_rate = 0.1 
         self.patch_size = patch_size
+        self.decoder_type = decoder_type
 
         self.Tenc_x2    = EncoderTransformer(patch_size = 7, in_chans=input_nc, num_classes=output_nc, embed_dims=self.embed_dims,
                                              attn_drop_rate = self.attn_drop, drop_path_rate=self.drop_path_rate,
@@ -499,14 +503,17 @@ class ScratchFormer(nn.Module):
         self.TDec_x1   = DecoderTransformer(align_corners=False, in_channels = self.embed_dims, embedding_dim= self.embedding_dim,
                                             output_nc=output_nc, decoder_softmax = decoder_softmax)
         
-        self.TDec_x2   = MLPDecoder(align_corners=False, in_channels = self.embed_dims, patch_size= self.patch_size,embedding_dim= self.embedding_dim,
-                                            output_nc=output_nc, decoder_softmax = decoder_softmax)
+        self.TDec_x2   = MLPDecoder(align_corners=False, in_channels = self.embed_dims, embedding_dim= self.embedding_dim,
+                                    patch_size= self.patch_size, decoder_type = self.decoder_type,
+                                    output_nc=output_nc, decoder_softmax = decoder_softmax)
 
     def forward(self, x1, x2):
 
         # x1 (8,3,256,256)
         [fx1, fx2] = [self.Tenc_x2(x1), self.Tenc_x2(x2)]
 
-        cp = self.TDec_x2(fx1, fx2)
-
+        if self.decoder_type == 'base':
+            cp = self.TDec_x1(fx1, fx2)
+        else: 
+            cp = self.TDec_x2(fx1, fx2)
         return cp
