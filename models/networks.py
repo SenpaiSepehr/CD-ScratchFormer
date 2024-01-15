@@ -95,7 +95,7 @@ def init_net(net, init_type='normal', init_gain=0.02, gpu_ids=[]):
 
 def define_G(args, init_type='normal', init_gain=0.02, gpu_ids=[]):
     if args.net_G == 'ScratchFormer':
-        net = ScratchFormer(embed_dim=args.embed_dim, patch_size = args.patch_size)
+        net = ScratchFormer(embed_dim=args.embed_dim, patch_size = args.patch_size, decoder_type=args.decoder_type)
     else:
         raise NotImplementedError('Generator model name [%s] is not recognized' % args.net_G)
 
